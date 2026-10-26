@@ -90,8 +90,8 @@ const PIERCE_KEY = "pierce";
 const USERS = ["koki", "eri"];
 const STARTER_PACK_DEFAULTS = [
     { key: "last_train", qty: 4 },
-    { key: "4am", qty: 3 },
-    { key: "7am", qty: 1 },
+    { key: "4am", qty: 2 },
+    { key: "7am", qty: 2 },
     { key: "barrier", qty: 2 },
     { key: "pierce", qty: 1 },
 ];

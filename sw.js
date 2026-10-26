@@ -33,3 +33,15 @@ self.addEventListener("fetch", (e) => {
       .catch(() => caches.match(e.request))
   );
 });
+
+// 通知をタップしたら、開いているアプリを前面に出す（無ければ開く）
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      const client = list.find((c) => "focus" in c);
+      if (client) return client.focus();
+      return self.clients.openWindow("./index.html");
+    })
+  );
+});

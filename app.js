@@ -6,6 +6,8 @@ const { useState, useEffect, useCallback, useRef } = React;
 (function setupStorage() {
     function useOfflineFallback() {
         const mem = {};
+        const listeners = {};
+        const emit = (key) => (listeners[key] || []).forEach((cb) => cb(mem[key]));
         window.storage = {
             async get(key) {
                 if (!(key in mem))
@@ -14,7 +16,25 @@ const { useState, useEffect, useCallback, useRef } = React;
             },
             async set(key, value) {
                 mem[key] = value;
+                emit(key);
                 return { key, value, shared: true };
+            },
+            subscribe(key, onValue) {
+                (listeners[key] = listeners[key] || []).push(onValue);
+                setTimeout(() => onValue(mem[key]), 0);
+                return () => {
+                    listeners[key] = (listeners[key] || []).filter((cb) => cb !== onValue);
+                };
+            },
+            async transact(keys, fn) {
+                const cur = {};
+                keys.forEach((k) => (cur[k] = mem[k]));
+                const out = fn(cur);
+                if (!out)
+                    return null;
+                Object.assign(mem, out);
+                Object.keys(out).forEach(emit);
+                return out;
             },
         };
         window.OKURIKEN_OFFLINE = true;
@@ -39,6 +59,25 @@ const { useState, useEffect, useCallback, useRef } = React;
             async set(key, value) {
                 await col.doc(key).set({ value, updatedAt: Date.now() });
                 return { key, value, shared: true };
+            },
+            // 文書の変更をリアルタイムに受け取る。戻り値は購読解除の関数
+            subscribe(key, onValue, onError) {
+                return col.doc(key).onSnapshot((doc) => onValue(doc.exists ? doc.data().value : undefined), onError);
+            },
+            // keys の最新値を読んで fn に渡し、fn が返した { key: value } を書き込む（null なら書かない）。
+            // ふたりが同時に操作しても、相手の変更を上書きして消さないようにトランザクションで行う。
+            // 競合すると fn は最新値で呼び直されるので、fn に副作用を持たせない
+            async transact(keys, fn) {
+                return db.runTransaction(async (tx) => {
+                    const docs = await Promise.all(keys.map((k) => tx.get(col.doc(k))));
+                    const cur = {};
+                    keys.forEach((k, i) => (cur[k] = docs[i].exists ? docs[i].data().value : undefined));
+                    const out = fn(cur);
+                    if (!out)
+                        return null;
+                    Object.keys(out).forEach((k) => tx.set(col.doc(k), { value: out[k], updatedAt: Date.now() }));
+                    return out;
+                });
             },
         };
     }
@@ -187,6 +226,67 @@ function slugify(label) {
         "_" +
         Math.random().toString(36).slice(2, 6));
 }
+const TICKETS_KEY = "tickets-all";
+const LOG_KEY = "activity-log";
+const NAME_STORAGE_KEY = "billet:myName";
+function parseArr(value) {
+    try {
+        const arr = value ? JSON.parse(value) : [];
+        return Array.isArray(arr) ? arr : [];
+    }
+    catch (e) {
+        return [];
+    }
+}
+// 選んだ名前は端末に覚えておき、次回からゲート画面を飛ばす
+function loadSavedName() {
+    try {
+        const v = window.localStorage.getItem(NAME_STORAGE_KEY);
+        return USERS.includes(v) ? v : "";
+    }
+    catch (e) {
+        return "";
+    }
+}
+function saveName(name) {
+    try {
+        window.localStorage.setItem(NAME_STORAGE_KEY, name);
+    }
+    catch (e) {
+        // プライベートモードなどで保存できなくても、毎回選べば使える
+    }
+}
+// 通し番号。件数 + 1 だと削除後に重複するので、既存の最大値の次にする
+function nextSerial(list) {
+    return list.reduce((m, t) => Math.max(m, Number(t.serial) || 0), 0) + 1;
+}
+// 届いたばかりでまだ開けていない券。openedAt が無い（undefined の）古い券は開封済みとして扱う
+function isUnopened(ticket) {
+    return ticket.openedAt === null && ticket.status === "unused" && !isExpired(ticket);
+}
+// iOS のホーム画面アプリでは new Notification() が使えないので、Service Worker 経由で出す
+function showSystemNotification(body) {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted")
+        return;
+    const title = "🎫 billet";
+    const opts = { body, icon: "./icon-192.png", badge: "./icon-192.png" };
+    const fallback = () => {
+        try {
+            new Notification(title, opts);
+        }
+        catch (e) {
+            // 通知の生成に失敗しても致命的ではない
+        }
+    };
+    if (typeof navigator !== "undefined" && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+        navigator.serviceWorker
+            .getRegistration()
+            .then((reg) => (reg ? reg.showNotification(title, opts) : fallback()))
+            .catch(fallback);
+        return;
+    }
+    fallback();
+}
 /* ---------------- Ticket stub ---------------- */
 function TicketStub({ ticket, onClick, compact, onDelete }) {
     const rarity = RARITY[ticket.rarity] || RARITY.normal;
@@ -279,7 +379,8 @@ function TicketStub({ ticket, onClick, compact, onDelete }) {
                     ticket.status === "unused" && !expired && ticket.expiresAt && (React.createElement("span", { style: { color: "#D97706" } },
                         "\u671F\u9650 ",
                         fmtMonthDay(ticket.expiresAt),
-                        "\u307E\u3067")))),
+                        "\u307E\u3067")),
+                    isUnopened(ticket) && React.createElement("span", { style: { color: "#D6336C", fontWeight: 700 } }, "\uD83C\uDF81 \u672A\u958B\u5C01"))),
             React.createElement("div", { style: { position: "relative", width: 0, zIndex: 1 } },
                 React.createElement("div", { style: {
                         position: "absolute",
@@ -662,6 +763,204 @@ function TicketModal({ ticket, myName, tickets, onClose, onUse, onInvalidate, on
                     fontWeight: 700,
                 } }, "\u23F3 \u3053\u306E\u30C1\u30B1\u30C3\u30C8\u306F\u6709\u52B9\u671F\u9650\u5207\u308C\u3067\u3059")))));
 }
+/* ---------------- Unboxing ---------------- */
+const SPARK_COLORS = {
+    ssr: ["#FFD9E8", "#C9E9FF", "#FFF3C4", "#E8D9FF", "#FFFFFF"],
+    rare: ["#93C5FD", "#3B82F6", "#FFFFFF"],
+};
+function Sparks({ rarity }) {
+    const colors = SPARK_COLORS[rarity];
+    if (!colors)
+        return null;
+    const count = rarity === "ssr" ? 18 : 10;
+    return (React.createElement("div", { style: { position: "absolute", inset: 0, pointerEvents: "none", zIndex: 3 } }, Array.from({ length: count }).map((_, i) => {
+        const angle = (i / count) * Math.PI * 2;
+        const dist = (rarity === "ssr" ? 150 : 110) + (i % 2) * 40;
+        return (React.createElement("span", { key: i, className: "unbox-spark", style: {
+                "--dx": `${Math.round(Math.cos(angle) * dist)}px`,
+                "--dy": `${Math.round(Math.sin(angle) * dist)}px`,
+                background: colors[i % colors.length],
+                boxShadow: `0 0 10px ${colors[i % colors.length]}`,
+            } }));
+    })));
+}
+// 届いた券をガチャのように 1 枚ずつめくって開ける。items は開封順（レア度の低い順）
+function Unboxing({ items, onFinish, onLater }) {
+    const [index, setIndex] = useState(0);
+    const [flipped, setFlipped] = useState(false);
+    const [summary, setSummary] = useState(false);
+    if (items.length === 0)
+        return null;
+    const cur = items[Math.min(index, items.length - 1)];
+    const isLast = index >= items.length - 1;
+    const rarity = RARITY[cur.rarity] || RARITY.normal;
+    const isSSR = cur.rarity === "ssr";
+    const senders = Array.from(new Set(items.map((t) => t.from)));
+    const reveal = () => {
+        if (flipped)
+            return;
+        haptic(isSSR ? [30, 60, 30, 60, 120] : cur.rarity === "rare" ? [20, 40, 40] : 20);
+        setFlipped(true);
+    };
+    const next = () => {
+        if (isLast) {
+            setSummary(true);
+            return;
+        }
+        setIndex((i) => i + 1);
+        setFlipped(false);
+    };
+    const textBtn = {
+        background: "transparent",
+        border: "none",
+        color: "rgba(255,255,255,0.6)",
+        fontSize: 12.5,
+        fontWeight: 700,
+        padding: "8px 12px",
+        cursor: "pointer",
+        fontFamily: "inherit",
+    };
+    const primaryBtn = {
+        width: "100%",
+        background: "#FFFFFF",
+        color: "#1C1C1E",
+        border: "none",
+        borderRadius: 12,
+        padding: "13px 0",
+        fontWeight: 800,
+        fontSize: 14.5,
+        cursor: "pointer",
+        fontFamily: "inherit",
+    };
+    return (React.createElement("div", { style: {
+            position: "fixed",
+            inset: 0,
+            zIndex: 85,
+            background: "radial-gradient(circle at 50% 40%, #3B2A55 0%, #16121F 70%)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "calc(20px + env(safe-area-inset-top, 0px)) 20px calc(20px + env(safe-area-inset-bottom, 0px))",
+            fontFamily: "'Plus Jakarta Sans', sans-serif",
+            color: "#FFFFFF",
+            overflow: "hidden",
+        } }, summary ? (React.createElement("div", { className: "unbox-pop", style: { width: "100%", maxWidth: 360, textAlign: "center" } },
+        React.createElement("div", { style: { fontSize: 40 } }, "🎁"),
+        React.createElement("div", { style: { fontWeight: 800, fontSize: 20, marginTop: 6 } },
+            items.length,
+            "枚の券を受け取りました"),
+        React.createElement("div", { style: {
+                marginTop: 16,
+                maxHeight: "52vh",
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                padding: 10,
+                borderRadius: 14,
+                background: "rgba(255,255,255,0.08)",
+                textAlign: "left",
+            } }, items.map((t) => (React.createElement(TicketStub, { key: t.id, ticket: Object.assign(Object.assign({}, t), { openedAt: t.openedAt || "now" }), compact: true, onClick: () => { } })))),
+        React.createElement("button", { onClick: () => onFinish(items.map((t) => t.id)), style: Object.assign(Object.assign({}, primaryBtn), { marginTop: 18 }) }, "受け取る"))) : (React.createElement("div", { style: { width: "100%", maxWidth: 340, display: "flex", flexDirection: "column", alignItems: "center" } },
+        React.createElement("div", { style: { fontSize: 12.5, color: "rgba(255,255,255,0.6)", fontWeight: 700 } },
+            senders.join("・"),
+            "さんから"),
+        React.createElement("div", { style: { fontWeight: 800, fontSize: 21, marginTop: 4 } }, items.length > 1 ? `${items.length}枚の券が届きました` : "券が届きました"),
+        items.length > 1 && (React.createElement("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 6 } },
+            index + 1,
+            " / ",
+            items.length)),
+        React.createElement("div", { key: cur.id, className: "unbox-float", style: { position: "relative", width: 250, height: 340, marginTop: 44 } },
+            React.createElement("div", { className: `unbox-aura unbox-aura-${cur.rarity in RARITY ? cur.rarity : "normal"}${flipped ? " is-open" : ""}` }),
+            React.createElement("div", { className: `unbox-stage${isSSR && !flipped ? " unbox-shake" : ""}`, onClick: flipped ? next : reveal, style: { position: "relative", width: "100%", height: "100%", cursor: "pointer", zIndex: 1 } },
+                React.createElement("div", { className: `unbox-card${flipped ? " is-flipped" : ""}` },
+                    React.createElement("div", { className: "unbox-face", style: {
+                            background: "linear-gradient(135deg, #7C3AED, #D6336C, #F97316)",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 10,
+                            boxShadow: "0 24px 48px rgba(0,0,0,0.35)",
+                        } },
+                        React.createElement("div", { className: "unbox-pattern" }),
+                        React.createElement("div", { style: {
+                                width: 64,
+                                height: 64,
+                                borderRadius: 18,
+                                background: "rgba(255,255,255,0.18)",
+                                border: "1.5px solid rgba(255,255,255,0.5)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                fontWeight: 800,
+                                fontSize: 30,
+                                position: "relative",
+                            } }, "b"),
+                        React.createElement("div", { style: { fontWeight: 800, fontSize: 22, letterSpacing: -0.5, position: "relative" } }, "billet"),
+                        React.createElement("div", { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: 3, opacity: 0.85, position: "relative", marginTop: 18 } }, "TAP TO OPEN")),
+                    React.createElement("div", { className: `unbox-face unbox-front${isSSR ? " stub-ssr" : ""}`, style: {
+                            background: "#FFFFFF",
+                            border: `3px solid ${rarity.ring}`,
+                            color: "#1C1C1E",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: 22,
+                            boxSizing: "border-box",
+                            textAlign: "center",
+                            boxShadow: `0 24px 48px rgba(0,0,0,0.35), 0 0 40px ${rarity.ring}88`,
+                        } },
+                        isSSR && React.createElement("div", { className: "holo-sweep" }),
+                        React.createElement("div", { style: { position: "relative", zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center" } },
+                            React.createElement("div", { style: { fontSize: 68, lineHeight: 1 } }, cur.emoji),
+                            React.createElement("div", { style: { fontWeight: 800, fontSize: 24, marginTop: 14 } }, cur.title),
+                            React.createElement("div", { style: {
+                                    marginTop: 10,
+                                    fontWeight: 800,
+                                    fontSize: 12,
+                                    letterSpacing: 2,
+                                    color: isSSR ? "#B07CC0" : rarity.ring,
+                                    border: `1.5px solid ${isSSR ? "#B07CC0" : rarity.ring}`,
+                                    borderRadius: 999,
+                                    padding: "3px 14px",
+                                } }, rarity.label),
+                            cur.message && (React.createElement("div", { style: {
+                                    marginTop: 16,
+                                    fontSize: 13,
+                                    lineHeight: 1.6,
+                                    color: "rgba(28,28,30,0.75)",
+                                    background: "rgba(0,0,0,0.05)",
+                                    borderRadius: 10,
+                                    padding: "10px 12px",
+                                    whiteSpace: "pre-wrap",
+                                    maxHeight: 96,
+                                    overflowY: "auto",
+                                } }, cur.message)),
+                            React.createElement("div", { style: { marginTop: 16, fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "rgba(28,28,30,0.45)" } },
+                                "No.",
+                                pad(cur.serial)))))),
+            flipped && React.createElement(Sparks, { rarity: cur.rarity }),
+            flipped && isSSR && (React.createElement("div", { className: "unbox-pop unbox-ssr-label", style: {
+                    position: "absolute",
+                    top: -42,
+                    left: 0,
+                    right: 0,
+                    textAlign: "center",
+                    fontWeight: 800,
+                    fontSize: 30,
+                    letterSpacing: 4,
+                    zIndex: 4,
+                    pointerEvents: "none",
+                } }, "SSR!!"))),
+        flipped && isSSR && React.createElement("div", { key: `flash-${cur.id}`, className: "unbox-flash" }),
+        React.createElement("div", { style: { width: "100%", marginTop: 30, minHeight: 96, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 } }, flipped ? (React.createElement(React.Fragment, null,
+            React.createElement("button", { onClick: next, className: "unbox-pop", style: primaryBtn }, isLast ? "結果を見る" : "次の券へ"),
+            !isLast && (React.createElement("button", { onClick: () => setSummary(true), style: textBtn }, "残りをまとめて開ける")))) : (React.createElement(React.Fragment, null,
+            React.createElement("div", { style: { fontSize: 13, color: "rgba(255,255,255,0.75)", fontWeight: 700, padding: "12px 0" } }, "カードをタップして開ける"),
+            React.createElement("button", { onClick: () => onLater(items.slice(0, index).map((t) => t.id)), style: textBtn }, "あとで開ける"))))))));
+}
 /* ---------------- Empty state ---------------- */
 function Empty({ text, sub }) {
     return (React.createElement("div", { style: {
@@ -676,8 +975,8 @@ function Empty({ text, sub }) {
 }
 /* ---------------- Main App ---------------- */
 function TicketBooth() {
-    const [myName, setMyName] = useState("");
-    const [gateOpen, setGateOpen] = useState(true);
+    const [myName, setMyName] = useState(loadSavedName);
+    const [gateOpen, setGateOpen] = useState(() => !loadSavedName());
     const [tickets, setTickets] = useState([]);
     const [activityLog, setActivityLog] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -690,7 +989,10 @@ function TicketBooth() {
     const [message, setMessage] = useState("");
     const [issueMemo, setIssueMemo] = useState("");
     const [packMemo, setPackMemo] = useState("");
-    const [to, setTo] = useState("");
+    const [to, setTo] = useState(() => {
+        const saved = loadSavedName();
+        return saved ? USERS.find((u) => u !== saved) || "" : "";
+    });
     const [qty, setQty] = useState(1);
     // starter pack (bulk issue) state
     const [packQty, setPackQty] = useState(() => {
@@ -701,6 +1003,10 @@ function TicketBooth() {
     // notifications
     const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
     const [popupQueue, setPopupQueue] = useState([]);
+    // 開封演出中の券の id（開封順）。null なら演出していない
+    const [unbox, setUnbox] = useState(null);
+    // 「あとで開ける」を押したら、次に新しい券が届くまで自動では開かない
+    const unboxDismissedRef = useRef(false);
     const prevTicketsRef = useRef(null);
     const showToast = (t) => {
         setToast(t);
@@ -718,55 +1024,56 @@ function TicketBooth() {
         }
     };
     useEffect(() => {
-        if (!myName) {
-            prevTicketsRef.current = tickets;
+        // 読み込み前や名前の切り替え直後は比較の基準を取り直すだけにする
+        // （起動直後に、過去の使用・発行をまとめて新着と勘違いしないため）
+        const prev = prevTicketsRef.current;
+        if (!myName || loading) {
+            prevTicketsRef.current = null;
             return;
         }
+        prevTicketsRef.current = { name: myName, tickets };
+        if (!prev || prev.name !== myName)
+            return;
         const other = USERS.find((u) => u !== myName);
-        const prev = prevTicketsRef.current;
-        if (prev && other) {
-            const prevMap = new Map(prev.map((t) => [t.id, t]));
-            const newlyUsed = tickets.filter((t) => {
-                if (t.to !== other || t.status !== "used")
-                    return false;
-                const before = prevMap.get(t.id);
-                return !before || before.status !== "used";
-            });
-            if (newlyUsed.length > 0) {
-                setPopupQueue((q) => [...q, ...newlyUsed]);
-                if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-                    newlyUsed.forEach((t) => {
-                        try {
-                            new Notification("🎫 billet", {
-                                body: `${other}さんが「${t.title}」を使用しました`,
-                                icon: "./icon-192.png",
-                            });
-                        }
-                        catch (e) {
-                            // 通知の生成に失敗しても致命的ではない
-                        }
-                    });
-                }
-            }
+        if (!other)
+            return;
+        const prevMap = new Map(prev.tickets.map((t) => [t.id, t]));
+        const newlyUsed = tickets.filter((t) => {
+            if (t.to !== other || t.status !== "used")
+                return false;
+            const before = prevMap.get(t.id);
+            return !before || before.status !== "used";
+        });
+        if (newlyUsed.length > 0) {
+            setPopupQueue((q) => [...q, ...newlyUsed]);
+            newlyUsed.forEach((t) => showSystemNotification(`${other}さんが「${t.title}」を使用しました`));
         }
-        prevTicketsRef.current = tickets;
-    }, [tickets, myName]);
+        const arrived = tickets.filter((t) => {
+            if (t.to !== myName || t.status !== "unused")
+                return false;
+            const before = prevMap.get(t.id);
+            return !before || before.to !== myName;
+        });
+        if (arrived.length > 0) {
+            unboxDismissedRef.current = false;
+            showSystemNotification(`${other}さんから券が${arrived.length}枚届きました`);
+        }
+    }, [tickets, myName, loading]);
+    // 手動更新（🔄ボタン）用。普段は下の購読で自動的に最新になる
     const load = useCallback(async (opts) => {
         const silent = opts && opts.silent;
         if (!silent)
             setLoading(true);
         try {
-            const res = await window.storage.get("tickets-all", true);
-            const arr = res && res.value ? JSON.parse(res.value) : [];
-            setTickets(Array.isArray(arr) ? arr : []);
+            const res = await window.storage.get(TICKETS_KEY, true);
+            setTickets(parseArr(res && res.value));
         }
         catch (e) {
             setTickets([]);
         }
         try {
-            const logRes = await window.storage.get("activity-log", true);
-            const logArr = logRes && logRes.value ? JSON.parse(logRes.value) : [];
-            setActivityLog(Array.isArray(logArr) ? logArr : []);
+            const logRes = await window.storage.get(LOG_KEY, true);
+            setActivityLog(parseArr(logRes && logRes.value));
         }
         catch (e) {
             setActivityLog([]);
@@ -775,27 +1082,71 @@ function TicketBooth() {
             setLoading(false);
     }, []);
     useEffect(() => {
-        load();
-        const timer = setInterval(() => load({ silent: true }), 4000);
-        return () => clearInterval(timer);
-    }, [load]);
-    const persist = async (arr) => {
-        setTickets(arr);
+        let gotTickets = false;
+        let gotLog = false;
+        const done = () => {
+            if (gotTickets && gotLog)
+                setLoading(false);
+        };
+        const onError = (e) => {
+            console.error("subscribe failed:", e);
+            setLoading(false);
+            showToast("最新の状態を読み込めませんでした");
+        };
+        const unsubs = [
+            window.storage.subscribe(TICKETS_KEY, (v) => {
+                setTickets(parseArr(v));
+                gotTickets = true;
+                done();
+            }, onError),
+            window.storage.subscribe(LOG_KEY, (v) => {
+                setActivityLog(parseArr(v));
+                gotLog = true;
+                done();
+            }, onError),
+        ];
+        return () => unsubs.forEach((u) => u && u());
+    }, []);
+    // 券とログを最新の状態から作り直して、同じトランザクションで保存する。
+    // recipe は最新の { tickets, log } を受け取り、書き込む { tickets?, log? } を返す。
+    // 書き込めない状態なら理由の文字列を返す（トーストに出して何もしない）。
+    // 競合時は recipe が呼び直されるので、recipe の中で state を触らない
+    const commit = async (recipe) => {
+        let result = null;
+        let reason = "";
         try {
-            await window.storage.set("tickets-all", JSON.stringify(arr), true);
+            await window.storage.transact([TICKETS_KEY, LOG_KEY], (cur) => {
+                result = null;
+                reason = "";
+                const res = recipe({ tickets: parseArr(cur[TICKETS_KEY]), log: parseArr(cur[LOG_KEY]) });
+                if (typeof res === "string" || !res) {
+                    reason = res || "";
+                    return null;
+                }
+                result = res;
+                const out = {};
+                if (res.tickets)
+                    out[TICKETS_KEY] = JSON.stringify(res.tickets);
+                if (res.log)
+                    out[LOG_KEY] = JSON.stringify(res.log);
+                return out;
+            });
         }
         catch (e) {
-            showToast("保存に失敗しました");
+            console.error("save failed:", e);
+            showToast("保存に失敗しました（通信状態を確認してください）");
+            return null;
         }
-    };
-    const persistLog = async (arr) => {
-        setActivityLog(arr);
-        try {
-            await window.storage.set("activity-log", JSON.stringify(arr), true);
+        if (!result) {
+            if (reason)
+                showToast(reason);
+            return null;
         }
-        catch (e) {
-            // ログの保存に失敗しても操作自体は成功しているので致命的ではない
-        }
+        if (result.tickets)
+            setTickets(result.tickets);
+        if (result.log)
+            setActivityLog(result.log);
+        return result;
     };
     // ticket の操作（発行・譲渡・使用・キャンセル・無効化・復活）を履歴ログに記録する。
     // extra には使用日（usedOn）・メモ（memo）・発行枚数（count）・差出人/宛先などを入れる。
@@ -811,10 +1162,31 @@ function TicketBooth() {
         at: new Date().toISOString(),
     }, extra));
     const handleGate = (name) => {
+        saveName(name);
         setMyName(name);
         setTo(USERS.find((u) => u !== name) || "");
         setGateOpen(false);
     };
+    const newTicket = (item, rarityKey, dest, now, serial, extra) => (Object.assign({
+        id: uid(),
+        title: item.label,
+        emoji: item.emoji,
+        typeKey: item.key,
+        rarity: rarityKey,
+        message: "",
+        from: myName,
+        to: dest,
+        status: "unused",
+        createdAt: now,
+        expiresAt: monthEndISO(now),
+        usedAt: null,
+        invalidatedBy: null,
+        invalidatedAt: null,
+        restoredBy: null,
+        restoredAt: null,
+        openedAt: null,
+        serial,
+    }, extra));
     const issueTicket = async () => {
         const dest = to.trim();
         if (!dest) {
@@ -823,34 +1195,20 @@ function TicketBooth() {
         }
         const n = Math.max(1, Math.min(50, Number(qty) || 1));
         const item = PRESETS.find((c) => c.key === presetKey) || PRESETS[0];
-        const title = item.label;
-        const emoji = item.emoji;
-        const typeKey = item.key;
-        const base = tickets.length;
         const now = new Date().toISOString();
-        const newTickets = Array.from({ length: n }).map((_, i) => ({
-            id: uid(),
-            title,
-            emoji,
-            typeKey,
-            rarity,
-            message: message.trim(),
-            from: myName,
-            to: dest,
-            status: "unused",
-            createdAt: now,
-            expiresAt: monthEndISO(now),
-            usedAt: null,
-            invalidatedBy: null,
-            invalidatedAt: null,
-            restoredBy: null,
-            restoredAt: null,
-            serial: base + i + 1,
-        }));
-        const next = [...tickets, ...newTickets];
-        await persist(next);
-        await persistLog([...activityLog, logEvent(newTickets[0], "issued", { count: n, from: myName, to: dest, memo: issueMemo.trim() })]);
-        showToast(`「${title}」を${dest}さんに${n}枚発行しました`);
+        const msg = message.trim();
+        const memo = issueMemo.trim();
+        const res = await commit(({ tickets: cur, log }) => {
+            const base = nextSerial(cur);
+            const newTickets = Array.from({ length: n }).map((_, i) => newTicket(item, rarity, dest, now, base + i, { message: msg }));
+            return {
+                tickets: [...cur, ...newTickets],
+                log: [...log, logEvent(newTickets[0], "issued", { count: n, from: myName, to: dest, memo })],
+            };
+        });
+        if (!res)
+            return;
+        showToast(`「${item.label}」を${dest}さんに${n}枚発行しました`);
         setMessage("");
         setIssueMemo("");
         setTo("");
@@ -858,80 +1216,114 @@ function TicketBooth() {
     };
     const markUsed = async (ticket, usedOn) => {
         const day = usedOn || todayYMD();
-        const next = tickets.map((t) => t.id === ticket.id ? Object.assign(Object.assign({}, t), { status: "used", usedAt: new Date().toISOString(), usedOn: day }) : t);
-        await persist(next);
-        await persistLog([...activityLog, logEvent(ticket, "used", { usedOn: day })]);
+        const res = await commit(({ tickets: cur, log }) => {
+            const target = cur.find((t) => t.id === ticket.id);
+            if (!target || target.status !== "unused" || target.to !== myName)
+                return "この券はもう使用できません";
+            return {
+                tickets: cur.map((t) => t.id === ticket.id ? Object.assign(Object.assign({}, t), { status: "used", usedAt: new Date().toISOString(), usedOn: day }) : t),
+                log: [...log, logEvent(ticket, "used", { usedOn: day })],
+            };
+        });
+        if (!res)
+            return;
         setDetail(null);
         showToast("チケットを使用しました");
     };
     const invalidateTicket = async (target) => {
-        const barrierTicket = tickets.find((t) => t.to === myName && t.typeKey === BARRIER_KEY && t.status === "unused");
-        if (!barrierTicket) {
-            showToast("バリア券を持っていません");
-            return;
-        }
-        const now = new Date().toISOString();
-        const next = tickets.map((t) => {
-            if (t.id === barrierTicket.id) {
-                return Object.assign(Object.assign({}, t), { status: "used", usedAt: now });
-            }
-            if (t.id === target.id) {
-                return Object.assign(Object.assign({}, t), { status: "invalidated", invalidatedBy: barrierTicket.id, invalidatedAt: now });
-            }
-            return t;
+        const res = await commit(({ tickets: cur, log }) => {
+            const barrierTicket = cur.find((t) => t.to === myName && t.typeKey === BARRIER_KEY && t.status === "unused");
+            if (!barrierTicket)
+                return "バリア券を持っていません";
+            const latest = cur.find((t) => t.id === target.id);
+            if (!latest || latest.status !== "used" || latest.invalidatedBy)
+                return "この使用はもう無効化できません";
+            const now = new Date().toISOString();
+            return {
+                tickets: cur.map((t) => {
+                    if (t.id === barrierTicket.id) {
+                        return Object.assign(Object.assign({}, t), { status: "used", usedAt: now });
+                    }
+                    if (t.id === target.id) {
+                        return Object.assign(Object.assign({}, t), { status: "invalidated", invalidatedBy: barrierTicket.id, invalidatedAt: now });
+                    }
+                    return t;
+                }),
+                log: [...log, logEvent(target, "invalidated")],
+            };
         });
-        await persist(next);
-        await persistLog([...activityLog, logEvent(target, "invalidated")]);
-        setDetail(next.find((t) => t.id === target.id));
+        if (!res)
+            return;
         showToast(`🛡️「${target.title}」の使用を無効化しました`);
     };
     const restoreTicket = async (target) => {
-        const pierceTicket = tickets.find((t) => t.to === myName && t.typeKey === PIERCE_KEY && t.status === "unused");
-        if (!pierceTicket) {
-            showToast("バリア貫通券を持っていません");
-            return;
-        }
-        const now = new Date().toISOString();
-        const next = tickets.map((t) => {
-            if (t.id === pierceTicket.id) {
-                return Object.assign(Object.assign({}, t), { status: "used", usedAt: now });
-            }
-            if (t.id === target.id) {
-                return Object.assign(Object.assign({}, t), { status: "used", restoredBy: pierceTicket.id, restoredAt: now });
-            }
-            return t;
+        const res = await commit(({ tickets: cur, log }) => {
+            const pierceTicket = cur.find((t) => t.to === myName && t.typeKey === PIERCE_KEY && t.status === "unused");
+            if (!pierceTicket)
+                return "バリア貫通券を持っていません";
+            const latest = cur.find((t) => t.id === target.id);
+            if (!latest || latest.status !== "invalidated")
+                return "この券はもう無効化されていません";
+            const now = new Date().toISOString();
+            return {
+                tickets: cur.map((t) => {
+                    if (t.id === pierceTicket.id) {
+                        return Object.assign(Object.assign({}, t), { status: "used", usedAt: now });
+                    }
+                    if (t.id === target.id) {
+                        return Object.assign(Object.assign({}, t), { status: "used", restoredBy: pierceTicket.id, restoredAt: now });
+                    }
+                    return t;
+                }),
+                log: [...log, logEvent(target, "restored")],
+            };
         });
-        await persist(next);
-        await persistLog([...activityLog, logEvent(target, "restored")]);
-        setDetail(next.find((t) => t.id === target.id));
+        if (!res)
+            return;
         showToast(`⚔️「${target.title}」の無効化をキャンセルしました`);
     };
     const transferTicket = async (ticket, memo) => {
         const other = USERS.find((u) => u !== myName);
         if (!other)
             return;
-        const next = tickets.map((t) => (t.id === ticket.id ? Object.assign(Object.assign({}, t), { to: other }) : t));
-        await persist(next);
-        await persistLog([...activityLog, logEvent(ticket, "transferred", { from: myName, to: other, memo: memo || "" })]);
-        setDetail(next.find((t) => t.id === ticket.id));
+        const res = await commit(({ tickets: cur, log }) => {
+            const latest = cur.find((t) => t.id === ticket.id);
+            if (!latest || latest.status !== "unused" || latest.to !== myName)
+                return "この券はもう渡せません";
+            return {
+                // 渡した券は相手にとって新しく届いた券なので、未開封に戻す
+                tickets: cur.map((t) => (t.id === ticket.id ? Object.assign(Object.assign({}, t), { to: other, openedAt: null }) : t)),
+                log: [...log, logEvent(ticket, "transferred", { from: myName, to: other, memo: memo || "" })],
+            };
+        });
+        if (!res)
+            return;
         showToast(`🔁「${ticket.title}」を${other}さんに渡しました`);
     };
     const deleteTicket = async (ticket) => {
-        const next = tickets.filter((t) => t.id !== ticket.id);
-        await persist(next);
-        const nextLog = activityLog.filter((e) => e.ticketId !== ticket.id);
-        if (nextLog.length !== activityLog.length)
-            await persistLog(nextLog);
+        const res = await commit(({ tickets: cur, log }) => {
+            const nextLog = log.filter((e) => e.ticketId !== ticket.id);
+            return Object.assign({ tickets: cur.filter((t) => t.id !== ticket.id) }, nextLog.length !== log.length ? { log: nextLog } : {});
+        });
+        if (!res)
+            return;
         if (detail && detail.id === ticket.id)
             setDetail(null);
         showToast(`🗑️「${ticket.title}」を削除しました`);
     };
     const cancelUse = async (ticket) => {
-        const next = tickets.map((t) => t.id === ticket.id
-            ? Object.assign(Object.assign({}, t), { status: "unused", usedAt: null, usedOn: null, invalidatedBy: null, invalidatedAt: null, restoredBy: null, restoredAt: null }) : t);
-        await persist(next);
-        await persistLog([...activityLog, logEvent(ticket, "cancelled")]);
-        setDetail(next.find((t) => t.id === ticket.id));
+        const res = await commit(({ tickets: cur, log }) => {
+            const latest = cur.find((t) => t.id === ticket.id);
+            if (!latest || latest.status !== "used")
+                return "この券の使用はもうキャンセルできません";
+            return {
+                tickets: cur.map((t) => t.id === ticket.id
+                    ? Object.assign(Object.assign({}, t), { status: "unused", usedAt: null, usedOn: null, invalidatedBy: null, invalidatedAt: null, restoredBy: null, restoredAt: null }) : t),
+                log: [...log, logEvent(ticket, "cancelled")],
+            };
+        });
+        if (!res)
+            return;
         showToast(`↩️「${ticket.title}」の使用をキャンセルしました`);
     };
     const issueStarterPack = async () => {
@@ -940,47 +1332,58 @@ function TicketBooth() {
             showToast("宛先を選んでください");
             return;
         }
-        const base = tickets.length;
         const now = new Date().toISOString();
-        let count = 0;
-        const newTickets = [];
-        STARTER_PACK_DEFAULTS.forEach(({ key }) => {
-            const item = PRESETS.find((p) => p.key === key);
-            const qtyForKey = Math.max(0, Math.min(50, Number(packQty[key]) || 0));
-            if (!item || qtyForKey === 0)
-                return;
-            for (let i = 0; i < qtyForKey; i++) {
-                newTickets.push({
-                    id: uid(),
-                    title: item.label,
-                    emoji: item.emoji,
-                    typeKey: item.key,
-                    rarity: item.rarity,
-                    accent: ACCENTS[0].hex,
-                    message: "",
-                    from: myName,
-                    to: dest,
-                    status: "unused",
-                    createdAt: now,
-                    expiresAt: monthEndISO(now),
-                    usedAt: null,
-                    invalidatedBy: null,
-                    invalidatedAt: null,
-                    restoredBy: null,
-                    restoredAt: null,
-                    serial: base + (++count),
-                });
-            }
+        const memo = packMemo.trim();
+        let issuedCount = 0;
+        const res = await commit(({ tickets: cur, log }) => {
+            let serial = nextSerial(cur);
+            const newTickets = [];
+            STARTER_PACK_DEFAULTS.forEach(({ key }) => {
+                const item = PRESETS.find((p) => p.key === key);
+                const qtyForKey = Math.max(0, Math.min(50, Number(packQty[key]) || 0));
+                if (!item || qtyForKey === 0)
+                    return;
+                for (let i = 0; i < qtyForKey; i++) {
+                    newTickets.push(newTicket(item, item.rarity, dest, now, serial++, { accent: ACCENTS[0].hex }));
+                }
+            });
+            if (newTickets.length === 0)
+                return "枚数を1枚以上にしてください";
+            issuedCount = newTickets.length;
+            return {
+                tickets: [...cur, ...newTickets],
+                log: [...log, logEvent(Object.assign(Object.assign({}, newTickets[0]), { title: "スターターセット", emoji: "🎁" }), "issued", { count: newTickets.length, from: myName, to: dest, memo })],
+            };
         });
-        if (newTickets.length === 0) {
-            showToast("枚数を1枚以上にしてください");
+        if (!res)
             return;
-        }
-        const next = [...tickets, ...newTickets];
-        await persist(next);
-        await persistLog([...activityLog, logEvent(Object.assign(Object.assign({}, newTickets[0]), { title: "スターターセット", emoji: "🎁" }), "issued", { count: newTickets.length, from: myName, to: dest, memo: packMemo.trim() })]);
         setPackMemo("");
-        showToast(`🎁 スターターセット（${newTickets.length}枚）を${dest}さんに発行しました`);
+        showToast(`🎁 スターターセット（${issuedCount}枚）を${dest}さんに発行しました`);
+    };
+    // 開封した券に openedAt を付ける。演出を閉じるのは保存が終わってから
+    // （先に閉じると、まだ未開封に見える券で演出が自動的に始まり直してしまう）
+    const markOpened = async (ids) => {
+        if (ids.length === 0)
+            return true;
+        const idSet = new Set(ids);
+        const now = new Date().toISOString();
+        const res = await commit(({ tickets: cur }) => ({
+            tickets: cur.map((t) => (idSet.has(t.id) && t.to === myName && t.openedAt === null ? Object.assign(Object.assign({}, t), { openedAt: now }) : t)),
+        }));
+        return !!res;
+    };
+    const finishUnbox = async (ids) => {
+        const ok = await markOpened(ids);
+        if (!ok)
+            unboxDismissedRef.current = true;
+        setUnbox(null);
+        if (ok)
+            showToast(`🎁 ${ids.length}枚の券を受け取りました`);
+    };
+    const postponeUnbox = async (revealedIds) => {
+        unboxDismissedRef.current = true;
+        await markOpened(revealedIds);
+        setUnbox(null);
     };
     const sortByStatusThenDate = (a, b) => {
         const rank = (t) => (t.status === "unused" && !isExpired(t) ? 0 : 1);
@@ -1001,6 +1404,42 @@ function TicketBooth() {
         return t && (t.to === myName || t.from === myName || e.actor === myName || e.to === myName);
     })
         .sort((a, b) => (a.at < b.at ? 1 : -1));
+    // 詳細モーダルは常に最新の券を表示する（相手の操作や自分の保存結果をすぐ反映するため）
+    const detailTicket = detail ? ticketById.get(detail.id) || null : null;
+    const unopened = mine.filter(isUnopened);
+    const unopenedKey = unopened.map((t) => t.id).join(",");
+    const mineOpened = mine.filter((t) => !isUnopened(t));
+    const startUnbox = () => {
+        if (unopened.length === 0)
+            return;
+        // レア度の低い順にめくり、SSR を最後に出す
+        const order = unopened.slice().sort((a, b) => {
+            const wa = (RARITY[a.rarity] || RARITY.normal).weight;
+            const wb = (RARITY[b.rarity] || RARITY.normal).weight;
+            return wa !== wb ? wa - wb : (a.serial || 0) - (b.serial || 0);
+        });
+        setDetail(null);
+        setUnbox(order.map((t) => t.id));
+    };
+    // 中身を見る前に詳細を開いてしまわないよう、未開封の自分の券は開封演出に回す
+    const openDetail = (t) => {
+        if (t.to === myName && isUnopened(t))
+            startUnbox();
+        else
+            setDetail(t);
+    };
+    useEffect(() => {
+        if (gateOpen || loading || unbox || popupQueue.length > 0 || unboxDismissedRef.current)
+            return;
+        if (unopenedKey)
+            startUnbox();
+    }, [gateOpen, loading, unbox, popupQueue.length, unopenedKey]);
+    const unboxItems = unbox ? unbox.map((id) => ticketById.get(id)).filter(Boolean) : [];
+    // 演出中に相手が券をすべて消した場合は演出を閉じる
+    useEffect(() => {
+        if (unbox && unboxItems.length === 0)
+            setUnbox(null);
+    }, [unbox, unboxItems.length]);
     /* ---------- name gate ---------- */
     if (gateOpen) {
         return (React.createElement("div", { style: {
@@ -1111,7 +1550,72 @@ function TicketBooth() {
           .holo-sweep { transition: none; }
           .burning { animation: none; }
           .spark { animation: none; }
+          .unbox-card { transition: none; }
+          .unbox-front .holo-sweep, .unbox-float, .unbox-shake, .unbox-aura,
+          .unbox-spark, .unbox-flash, .unbox-pop, .unopened-banner { animation: none; }
+          .unbox-spark, .unbox-flash { display: none; }
         }
+        @keyframes holoMove { 0% { background-position: 0% 0%; } 100% { background-position: 100% 100%; } }
+        .unbox-front .holo-sweep { animation: holoMove 2.4s ease-in-out infinite alternate; }
+        .unbox-stage { perspective: 1200px; }
+        .unbox-card {
+          position:relative; width:100%; height:100%;
+          transform-style: preserve-3d;
+          transition: transform .7s cubic-bezier(.2,.8,.2,1);
+        }
+        .unbox-card.is-flipped { transform: rotateY(180deg); }
+        .unbox-face {
+          position:absolute; inset:0; border-radius:18px; overflow:hidden;
+          backface-visibility:hidden; -webkit-backface-visibility:hidden;
+        }
+        .unbox-front { transform: rotateY(180deg); }
+        .unbox-pattern {
+          position:absolute; inset:12px; border-radius:12px;
+          border: 1.5px dashed rgba(255,255,255,0.35);
+          background-image: radial-gradient(rgba(255,255,255,0.18) 1.2px, transparent 1.2px);
+          background-size: 14px 14px;
+        }
+        @keyframes unboxFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+        .unbox-float { animation: unboxFloat 2.6s ease-in-out infinite; }
+        @keyframes unboxShake {
+          0%,78%,100% { transform: rotate(0); }
+          82% { transform: rotate(-3deg); } 86% { transform: rotate(3deg); }
+          90% { transform: rotate(-2deg); } 94% { transform: rotate(2deg); }
+        }
+        .unbox-shake { animation: unboxShake 1.8s ease-in-out infinite; }
+        @keyframes unboxPulse { 0%,100% { opacity:.45; transform: scale(.98); } 50% { opacity:.9; transform: scale(1.05); } }
+        .unbox-aura {
+          position:absolute; inset:-22px; border-radius:34px; filter: blur(22px);
+          animation: unboxPulse 1.8s ease-in-out infinite; z-index:0; pointer-events:none;
+        }
+        .unbox-aura-normal { background: rgba(255,255,255,0.28); }
+        .unbox-aura-rare { background: #3B82F6; }
+        .unbox-aura-ssr { background: conic-gradient(#FFD9E8, #C9E9FF, #FFF3C4, #E8D9FF, #FFD9E8); }
+        .unbox-aura.is-open { inset:-40px; }
+        @keyframes unboxBurst {
+          0% { transform: translate(-50%,-50%) scale(.2); opacity:0; }
+          12% { opacity:1; }
+          100% { transform: translate(-50%,-50%) translate(var(--dx), var(--dy)) scale(0); opacity:0; }
+        }
+        .unbox-spark {
+          position:absolute; left:50%; top:50%; width:10px; height:10px; border-radius:50%;
+          animation: unboxBurst 1s ease-out .3s both;
+        }
+        @keyframes unboxFlash { 0% { opacity:0; } 20% { opacity:.85; } 100% { opacity:0; } }
+        .unbox-flash {
+          position:fixed; inset:0; pointer-events:none; z-index:2;
+          background: radial-gradient(circle at 50% 45%, #ffffff 0%, rgba(255,243,196,0.6) 35%, rgba(255,255,255,0) 70%);
+          animation: unboxFlash .9s ease-out .3s both;
+        }
+        @keyframes unboxPop { 0% { transform: scale(.4); opacity:0; } 60% { transform: scale(1.12); opacity:1; } 100% { transform: scale(1); opacity:1; } }
+        .unbox-pop { animation: unboxPop .45s ease-out .35s both; }
+        .unbox-ssr-label {
+          background: linear-gradient(90deg, #FFD9E8, #C9E9FF, #FFF3C4, #E8D9FF);
+          -webkit-background-clip: text; background-clip: text; color: transparent;
+          text-shadow: 0 0 24px rgba(255,255,255,0.35);
+        }
+        @keyframes bannerGlow { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.12); } }
+        .unopened-banner { animation: bannerGlow 2.2s ease-in-out infinite; }
         ::selection { background: #D6336C; color:#ffffff; }
       `),
         window.OKURIKEN_OFFLINE && (React.createElement("div", { style: { background: "#DC2626", color: "#fff", textAlign: "center", fontSize: 11.5, padding: "6px 10px" } }, "\u26A0\uFE0F Firebase\u672A\u8A2D\u5B9A\u306E\u305F\u3081\u3001\u3053\u306E\u30D6\u30E9\u30A6\u30B6\u3060\u3051\u306E\u4E00\u6642\u4FDD\u5B58\u306B\u306A\u3063\u3066\u3044\u307E\u3059\uFF08README\u53C2\u7167\uFF09")),
@@ -1165,7 +1669,7 @@ function TicketBooth() {
                         background: "rgba(59,130,246,0.1)",
                     } },
                     "\uD83D\uDEE1\uFE0F ",
-                    mine.filter((t) => t.typeKey === BARRIER_KEY && t.status === "unused").length),
+                    mineOpened.filter((t) => t.typeKey === BARRIER_KEY && t.status === "unused").length),
                 React.createElement("span", { style: {
                         display: "flex",
                         alignItems: "center",
@@ -1179,7 +1683,7 @@ function TicketBooth() {
                         background: "rgba(214,51,108,0.1)",
                     } },
                     "\u2694\uFE0F ",
-                    mine.filter((t) => t.typeKey === PIERCE_KEY && t.status === "unused").length)),
+                    mineOpened.filter((t) => t.typeKey === PIERCE_KEY && t.status === "unused").length)),
             React.createElement("div", { style: {
                     position: "absolute",
                     top: "calc(20px + env(safe-area-inset-top, 0px) + 5mm)",
@@ -1430,7 +1934,7 @@ function TicketBooth() {
                                 from: myName,
                                 to: to || "（宛先）",
                                 status: "unused",
-                                serial: tickets.length + 1,
+                                serial: nextSerial(tickets),
                             }, onClick: () => { } })),
                     React.createElement("button", { onClick: issueTicket, style: {
                             background: "#D6336C",
@@ -1528,7 +2032,32 @@ function TicketBooth() {
                             "\uD83C\uDF81 \u30BB\u30C3\u30C8\u3067\u4E00\u62EC\u767A\u884C\uFF08",
                             Object.values(packQty).reduce((a, b) => a + (Number(b) || 0), 0),
                             "\u679A\uFF09")))),
-                tab === "mine" && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, loading ? (React.createElement(Empty, { text: "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026" })) : mine.length === 0 ? (React.createElement(Empty, { text: "\u307E\u3060\u81EA\u5206\u306E\u5238\u306F\u3042\u308A\u307E\u305B\u3093", sub: "\u8AB0\u304B\u304C\u5238\u3092\u8D08\u3063\u3066\u304F\u308C\u308B\u3068\u3053\u3053\u306B\u4E26\u3073\u307E\u3059" })) : (groupTickets(mine).map((group, gi) => (React.createElement("div", { key: group.typeKey },
+                tab === "mine" && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, loading ? (React.createElement(Empty, { text: "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026" })) : mine.length === 0 ? (React.createElement(Empty, { text: "\u307E\u3060\u81EA\u5206\u306E\u5238\u306F\u3042\u308A\u307E\u305B\u3093", sub: "\u8AB0\u304B\u304C\u5238\u3092\u8D08\u3063\u3066\u304F\u308C\u308B\u3068\u3053\u3053\u306B\u4E26\u3073\u307E\u3059" })) : ([
+                    unopened.length > 0 && (React.createElement("button", { key: "unopened", onClick: startUnbox, className: "unopened-banner", style: {
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 12,
+                            width: "100%",
+                            border: "none",
+                            borderRadius: 12,
+                            padding: "14px 16px",
+                            marginBottom: mineOpened.length > 0 ? 12 : 0,
+                            background: "linear-gradient(135deg, #7C3AED, #D6336C, #F97316)",
+                            color: "#FFFFFF",
+                            cursor: "pointer",
+                            textAlign: "left",
+                            fontFamily: "inherit",
+                            boxShadow: "0 12px 24px rgba(214,51,108,0.25)",
+                        } },
+                        React.createElement("span", { style: { fontSize: 28 } }, "\uD83C\uDF81"),
+                        React.createElement("span", { style: { flex: 1 } },
+                            React.createElement("span", { style: { display: "block", fontWeight: 800, fontSize: 15 } },
+                                "\u672A\u958B\u5C01\u306E\u5238\u304C ",
+                                unopened.length,
+                                " \u679A"),
+                            React.createElement("span", { style: { display: "block", fontSize: 11.5, opacity: 0.85, marginTop: 2 } }, "\u30BF\u30C3\u30D7\u3057\u3066\u958B\u3051\u308B")),
+                        React.createElement("span", { style: { fontSize: 18 } }, "\u203A"))),
+                    ...groupTickets(mineOpened).map((group, gi) => (React.createElement("div", { key: group.typeKey },
                     React.createElement("div", { style: {
                             display: "flex",
                             alignItems: "center",
@@ -1544,7 +2073,7 @@ function TicketBooth() {
                             "\uFF08",
                             group.items.length,
                             "\uFF09")),
-                    React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, group.items.map((t) => (React.createElement(TicketStub, { key: t.id, ticket: t, onClick: () => setDetail(t), onDelete: deleteTicket })))))))))),
+                    React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, group.items.map((t) => (React.createElement(TicketStub, { key: t.id, ticket: t, onClick: () => setDetail(t), onDelete: deleteTicket })))))))]))),
                 tab === "theirs" && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, loading ? (React.createElement(Empty, { text: "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026" })) : theirs.length === 0 ? (React.createElement(Empty, { text: "\u307E\u3060\u76F8\u624B\u306E\u5238\u306F\u3042\u308A\u307E\u305B\u3093", sub: "Create\u30BF\u30D6\u304B\u3089\u5238\u3092\u8D08\u3063\u3066\u307F\u307E\u3057\u3087\u3046" })) : (groupTickets(theirs).map((group, gi) => (React.createElement("div", { key: group.typeKey },
                     React.createElement("div", { style: {
                             display: "flex",
@@ -1572,7 +2101,7 @@ function TicketBooth() {
                         issued: { label: e.count > 1 ? `発行 ${e.count}枚` : "発行", color: "#16A34A" },
                         transferred: { label: "譲渡", color: "#7C3AED" },
                     }[e.action];
-                    return (React.createElement("div", { key: e.id, onClick: () => t && setDetail(t), style: {
+                    return (React.createElement("div", { key: e.id, onClick: () => t && openDetail(t), style: {
                             display: "flex",
                             alignItems: "center",
                             gap: 10,
@@ -1595,7 +2124,8 @@ function TicketBooth() {
                                 e.memo))),
                         React.createElement("span", { style: { fontSize: 14, color: "rgba(28,28,30,0.42)" } }, "\u203A")));
                 })))))),
-        React.createElement(TicketModal, { ticket: detail, myName: myName, tickets: tickets, onClose: () => setDetail(null), onUse: markUsed, onInvalidate: invalidateTicket, onRestore: restoreTicket, onTransfer: transferTicket, onCancelUse: cancelUse }),
+        React.createElement(TicketModal, { ticket: detailTicket, myName: myName, tickets: tickets, onClose: () => setDetail(null), onUse: markUsed, onInvalidate: invalidateTicket, onRestore: restoreTicket, onTransfer: transferTicket, onCancelUse: cancelUse }),
+        unboxItems.length > 0 && (React.createElement(Unboxing, { key: unbox.join(","), items: unboxItems, onFinish: finishUnbox, onLater: postponeUnbox })),
         toast && (React.createElement("div", { style: {
                 position: "fixed",
                 bottom: 20,
@@ -1624,7 +2154,8 @@ function TicketBooth() {
                 alignItems: "center",
                 justifyContent: "center",
                 padding: 20,
-                zIndex: 80,
+                // 開封演出（85）の最中に届いても隠れないよう、演出より手前に出す
+                zIndex: 90,
             }, onClick: () => setPopupQueue((q) => q.slice(1)) },
             React.createElement("div", { onClick: (e) => e.stopPropagation(), style: {
                     width: "100%",

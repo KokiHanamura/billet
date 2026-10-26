@@ -20,6 +20,9 @@ GitHub Pages で公開: https://kokihanamura.github.io/billet/ （`main` に pus
 - `app.js` は JSX を変換済みのプレーン JS。変換前のソースは無いので `app.js` を直接編集する（`React.createElement` で書く）
 - データは Firestore の `okuriken_storage` コレクションに `tickets-all`（券の配列）と `activity-log`（操作ログの配列）を JSON 文字列で保存
 - ログの action: `issued` / `transferred` / `used` / `cancelled` / `invalidated` / `restored`
+- 読み込みは `onSnapshot` で購読し、書き込みは 2 つの文書をまとめて `runTransaction` で更新する（`commit(recipe)`）。recipe は最新の配列から次の配列を作る純粋な関数にする（競合時に呼び直される）
+- 券の `openedAt` が `null` なら未開封（開封演出の対象）。`openedAt` が無い古い券は開封済みとして扱う
+- 選んだ名前は `localStorage` の `billet:myName` に保存する
 
 ## Gotchas
 

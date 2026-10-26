@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>billet</title>
+  <meta name="description" content="気持ちを贈ろう。" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#F2F2F7" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="billet" />
+
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+
+  <!-- React（app.jsは事前にプレーンJSへ変換済みなので、ブラウザ側での変換は不要） -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin onerror="window.__billetLoadFail && window.__billetLoadFail('React')"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin onerror="window.__billetLoadFail && window.__billetLoadFail('ReactDOM')"></script>
+
+  <!-- Firebase（複数人でチケットを共有するためのデータ保存先） -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" onerror="window.__billetLoadFail && window.__billetLoadFail('Firebase App')"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js" onerror="window.__billetLoadFail && window.__billetLoadFail('Firestore')"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; background: #F2F2F7; }
+    #root { min-height: 100vh; }
+    #billet-diag {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      padding: 24px; font-family: sans-serif; color: #1C1C1E; text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <!--
+    診断用フォールバック表示。
+    React/Babelが正常に起動すれば #root の中身はReactが上書きするので、
+    これは自動的に見えなくなる。何かの読み込みが失敗した場合や、
+    一定時間経ってもReactが起動しない場合は、ここに理由が表示される。
+  -->
+  <div id="root">
+    <div id="billet-diag">
+      <div>
+        <div style="font-size:28px;margin-bottom:8px;">⏳</div>
+        <div style="font-weight:700;margin-bottom:8px;">読み込み中…</div>
+        <div id="billet-diag-msg" style="font-size:13px;color:#6b6b6b;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var reported = false;
+      function showDiag(msg) {
+        if (reported) return;
+        reported = true;
+        var el = document.getElementById("billet-diag-msg");
+        if (el) el.textContent = msg;
+      }
+      window.__billetLoadFail = function (name) {
+        showDiag(name + " の読み込みに失敗しました（CDNへの接続がブロックされている可能性があります。広告ブロッカーやセキュリティソフトを一度オフにして試してください）");
+      };
+      // 10秒経ってもReactが#rootを書き換えていなければ、原因を推測して表示する
+      setTimeout(function () {
+        var diag = document.getElementById("billet-diag");
+        if (!diag) return; // すでにReactが上書き済み = 正常
+        var missing = [];
+        if (typeof React === "undefined") missing.push("React");
+        if (typeof ReactDOM === "undefined") missing.push("ReactDOM");
+        if (missing.length) {
+          showDiag(missing.join("・") + " が読み込まれていません（ネットワークが原因の可能性があります）");
+        } else {
+          showDiag("スクリプトは読み込めていますが、アプリの起動処理でエラーが発生している可能性があります。ブラウザの「検証」→Consoleタブを確認してください。");
+        }
+      }, 10000);
+    })();
+  </script>
+
+  <script src="./firebase-config.js?v=2" onerror="window.__billetLoadFail && window.__billetLoadFail('firebase-config.js')"></script>
+  <script src="./app.js?v=3" onerror="window.__billetLoadFail && window.__billetLoadFail('app.js')"></script>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>

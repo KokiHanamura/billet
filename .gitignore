@@ -1,0 +1,7 @@
+# claude-harness
+.claude/settings.local.json
+CLAUDE.local.md
+.claude/*.local.json
+.env
+.env.*
+!.env.example

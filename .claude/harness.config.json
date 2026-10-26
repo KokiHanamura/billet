@@ -1,0 +1,23 @@
+{
+  "commands": {
+    "test": "",
+    "lint": "node --check app.js && node --check sw.js",
+    "typecheck": ""
+  },
+  "postEdit": [],
+  "verifyOnStop": false,
+  "scopes": {
+    "backend": [],
+    "frontend": [
+      "index.html",
+      "app.js",
+      "sw.js",
+      "manifest.json",
+      "firebase-config.js"
+    ],
+    "tests": []
+  },
+  "protectedPaths": [],
+  "allowManagedEdits": false,
+  "notifySound": true
+}

@@ -1,6 +1,8 @@
 # billet
 
 「気持ちを贈ろう。」——ふたり（Koki / Eri）で券を発行し合い、受け取り・使用・履歴を管理する発券アプリ（PWA）。
+公開URL: https://kokihanamura.github.io/billet/ （`main` に push すると GitHub Pages に自動で反映される）
+
 券の種類（終電券・4時券・7時券・バリア券・バリア貫通券）とレア度（NORMAL / RARE / SSR）を選んで相手に贈れる。
 
 ## 構成

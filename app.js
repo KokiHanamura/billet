@@ -118,6 +118,14 @@ function fmtDate(iso) {
     const d = new Date(iso);
     return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
+// 端末のローカル日付を input[type=date] と同じ "YYYY-MM-DD" 形式で返す
+function todayYMD() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function fmtYMD(ymd) {
+    return ymd ? ymd.replace(/-/g, "/") : "";
+}
 function fmtMonthDay(iso) {
     if (!iso)
         return "";
@@ -349,6 +357,15 @@ function TicketStub({ ticket, onClick, compact, onDelete }) {
 }
 /* ---------------- Detail modal ---------------- */
 function TicketModal({ ticket, myName, tickets, onClose, onUse, onInvalidate, onRestore, onTransfer, onCancelUse }) {
+    // 「使用する」「渡す」は確認ステップを挟み、使用日・メモを入力してから確定する
+    const [mode, setMode] = useState(null);
+    const [useDate, setUseDate] = useState(todayYMD());
+    const [memo, setMemo] = useState("");
+    useEffect(() => {
+        setMode(null);
+        setUseDate(todayYMD());
+        setMemo("");
+    }, [ticket && ticket.id]);
     if (!ticket)
         return null;
     const rarity = RARITY[ticket.rarity] || RARITY.normal;
@@ -453,7 +470,7 @@ function TicketModal({ ticket, myName, tickets, onClose, onUse, onInvalidate, on
                         expired ? "（期限切れ）" : ""))),
                 (ticket.status === "used" || ticket.status === "invalidated") && (React.createElement(React.Fragment, null,
                     React.createElement("span", { style: { opacity: 0.7 } }, "\u4F7F\u7528\u65E5"),
-                    React.createElement("span", null, fmtDate(ticket.usedAt)))),
+                    React.createElement("span", null, ticket.usedOn ? fmtYMD(ticket.usedOn) : fmtDate(ticket.usedAt)))),
                 ticket.status === "invalidated" && (React.createElement(React.Fragment, null,
                     React.createElement("span", { style: { opacity: 0.7 } }, "\u7121\u52B9\u5316\u65E5"),
                     React.createElement("span", null,
@@ -464,7 +481,7 @@ function TicketModal({ ticket, myName, tickets, onClose, onUse, onInvalidate, on
                     React.createElement("span", null,
                         "\u2694\uFE0F ",
                         fmtDate(ticket.restoredAt))))),
-            canUse && (React.createElement("button", { onClick: () => onUse(ticket), style: {
+            canUse && !mode && (React.createElement("button", { onClick: () => setMode("use"), style: {
                     marginTop: 20,
                     width: "100%",
                     background: "#1C1C1E",
@@ -481,7 +498,7 @@ function TicketModal({ ticket, myName, tickets, onClose, onUse, onInvalidate, on
                     gap: 8,
                     cursor: "pointer",
                 } }, "\uD83C\uDFF7\uFE0F \u3053\u306E\u30C1\u30B1\u30C3\u30C8\u3092\u4F7F\u7528\u3059\u308B")),
-            canTransfer && (React.createElement("button", { onClick: () => onTransfer(ticket), style: {
+            canTransfer && !mode && (React.createElement("button", { onClick: () => setMode("transfer"), style: {
                     marginTop: 10,
                     width: "100%",
                     background: "transparent",
@@ -501,6 +518,74 @@ function TicketModal({ ticket, myName, tickets, onClose, onUse, onInvalidate, on
                 "\uD83D\uDD01 ",
                 otherUser,
                 "\u3055\u3093\u306B\u6E21\u3059")),
+            mode && (React.createElement("div", { style: {
+                    marginTop: 20,
+                    background: "rgba(0,0,0,0.04)",
+                    borderRadius: 10,
+                    padding: 14,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 10,
+                    fontFamily: "'Plus Jakarta Sans', sans-serif",
+                } },
+                React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "rgba(28,28,30,0.6)" } }, mode === "use" ? "使用日" : `${otherUser}さんに渡すときのメモ（任意・ログに残ります）`),
+                mode === "use" ? (React.createElement("input", { type: "date", value: useDate, max: todayYMD(), onChange: (e) => setUseDate(e.target.value), style: {
+                        width: "100%",
+                        boxSizing: "border-box",
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        border: "1.5px solid rgba(0,0,0,0.2)",
+                        background: "#FFFFFF",
+                        color: "#1C1C1E",
+                        fontSize: 15,
+                        fontFamily: "inherit",
+                    } })) : (React.createElement("textarea", { value: memo, onChange: (e) => setMemo(e.target.value), placeholder: "例：今日のお礼に", rows: 2, style: {
+                        width: "100%",
+                        boxSizing: "border-box",
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        border: "1.5px solid rgba(0,0,0,0.2)",
+                        background: "#FFFFFF",
+                        color: "#1C1C1E",
+                        fontSize: 15,
+                        resize: "vertical",
+                        fontFamily: "inherit",
+                    } })),
+                React.createElement("div", { style: { display: "flex", gap: 8 } },
+                    React.createElement("button", { onClick: () => setMode(null), style: {
+                            flex: 1,
+                            background: "transparent",
+                            color: "rgba(28,28,30,0.6)",
+                            border: "1.5px solid rgba(0,0,0,0.25)",
+                            borderRadius: 10,
+                            padding: "11px 0",
+                            fontWeight: 700,
+                            fontSize: 13.5,
+                            cursor: "pointer",
+                        } }, "やめる"),
+                    React.createElement("button", { onClick: () => {
+                            if (mode === "use") {
+                                if (!useDate)
+                                    return;
+                                onUse(ticket, useDate);
+                            }
+                            else {
+                                onTransfer(ticket, memo.trim());
+                            }
+                            setMode(null);
+                            setMemo("");
+                        }, disabled: mode === "use" && !useDate, style: {
+                            flex: 2,
+                            background: "#1C1C1E",
+                            color: "#ffffff",
+                            border: "none",
+                            borderRadius: 10,
+                            padding: "12px 0",
+                            fontWeight: 700,
+                            fontSize: 14,
+                            cursor: "pointer",
+                            opacity: mode === "use" && !useDate ? 0.4 : 1,
+                        } }, mode === "use" ? "🏷️ この日付で使用する" : "🔁 渡す")))),
             canInvalidate && (React.createElement("button", { onClick: () => onInvalidate(ticket), style: {
                     marginTop: 20,
                     width: "100%",
@@ -603,6 +688,8 @@ function TicketBooth() {
     const [presetKey, setPresetKey] = useState("last_train");
     const [rarity, setRarity] = useState("normal");
     const [message, setMessage] = useState("");
+    const [issueMemo, setIssueMemo] = useState("");
+    const [packMemo, setPackMemo] = useState("");
     const [to, setTo] = useState("");
     const [qty, setQty] = useState(1);
     // starter pack (bulk issue) state
@@ -710,10 +797,11 @@ function TicketBooth() {
             // ログの保存に失敗しても操作自体は成功しているので致命的ではない
         }
     };
-    // ticket の操作（使用・キャンセル・無効化・復活）を履歴ログに記録する。
+    // ticket の操作（発行・譲渡・使用・キャンセル・無効化・復活）を履歴ログに記録する。
+    // extra には使用日（usedOn）・メモ（memo）・発行枚数（count）・差出人/宛先などを入れる。
     // ログはチケット自体の状態と切り離しているので、使用キャンセルで
     // チケットが未使用状態に戻っても履歴には残る
-    const logEvent = (ticket, action) => ({
+    const logEvent = (ticket, action, extra) => (Object.assign({
         id: uid(),
         ticketId: ticket.id,
         title: ticket.title,
@@ -721,7 +809,7 @@ function TicketBooth() {
         action,
         actor: myName,
         at: new Date().toISOString(),
-    });
+    }, extra));
     const handleGate = (name) => {
         setMyName(name);
         setTo(USERS.find((u) => u !== name) || "");
@@ -761,15 +849,18 @@ function TicketBooth() {
         }));
         const next = [...tickets, ...newTickets];
         await persist(next);
+        await persistLog([...activityLog, logEvent(newTickets[0], "issued", { count: n, from: myName, to: dest, memo: issueMemo.trim() })]);
         showToast(`「${title}」を${dest}さんに${n}枚発行しました`);
         setMessage("");
+        setIssueMemo("");
         setTo("");
         setQty(1);
     };
-    const markUsed = async (ticket) => {
-        const next = tickets.map((t) => t.id === ticket.id ? Object.assign(Object.assign({}, t), { status: "used", usedAt: new Date().toISOString() }) : t);
+    const markUsed = async (ticket, usedOn) => {
+        const day = usedOn || todayYMD();
+        const next = tickets.map((t) => t.id === ticket.id ? Object.assign(Object.assign({}, t), { status: "used", usedAt: new Date().toISOString(), usedOn: day }) : t);
         await persist(next);
-        await persistLog([...activityLog, logEvent(ticket, "used")]);
+        await persistLog([...activityLog, logEvent(ticket, "used", { usedOn: day })]);
         setDetail(null);
         showToast("チケットを使用しました");
     };
@@ -815,12 +906,13 @@ function TicketBooth() {
         setDetail(next.find((t) => t.id === target.id));
         showToast(`⚔️「${target.title}」の無効化をキャンセルしました`);
     };
-    const transferTicket = async (ticket) => {
+    const transferTicket = async (ticket, memo) => {
         const other = USERS.find((u) => u !== myName);
         if (!other)
             return;
         const next = tickets.map((t) => (t.id === ticket.id ? Object.assign(Object.assign({}, t), { to: other }) : t));
         await persist(next);
+        await persistLog([...activityLog, logEvent(ticket, "transferred", { from: myName, to: other, memo: memo || "" })]);
         setDetail(next.find((t) => t.id === ticket.id));
         showToast(`🔁「${ticket.title}」を${other}さんに渡しました`);
     };
@@ -836,7 +928,7 @@ function TicketBooth() {
     };
     const cancelUse = async (ticket) => {
         const next = tickets.map((t) => t.id === ticket.id
-            ? Object.assign(Object.assign({}, t), { status: "unused", usedAt: null, invalidatedBy: null, invalidatedAt: null, restoredBy: null, restoredAt: null }) : t);
+            ? Object.assign(Object.assign({}, t), { status: "unused", usedAt: null, usedOn: null, invalidatedBy: null, invalidatedAt: null, restoredBy: null, restoredAt: null }) : t);
         await persist(next);
         await persistLog([...activityLog, logEvent(ticket, "cancelled")]);
         setDetail(next.find((t) => t.id === ticket.id));
@@ -886,6 +978,8 @@ function TicketBooth() {
         }
         const next = [...tickets, ...newTickets];
         await persist(next);
+        await persistLog([...activityLog, logEvent(Object.assign(Object.assign({}, newTickets[0]), { title: "スターターセット", emoji: "🎁" }), "issued", { count: newTickets.length, from: myName, to: dest, memo: packMemo.trim() })]);
+        setPackMemo("");
         showToast(`🎁 スターターセット（${newTickets.length}枚）を${dest}さんに発行しました`);
     };
     const sortByStatusThenDate = (a, b) => {
@@ -903,7 +997,8 @@ function TicketBooth() {
     const historyItems = activityLog
         .filter((e) => {
         const t = ticketById.get(e.ticketId);
-        return t && (t.to === myName || t.from === myName);
+        // 譲渡で券の差出人・宛先が両方とも相手になっても、自分が関わった操作は残す
+        return t && (t.to === myName || t.from === myName || e.actor === myName || e.to === myName);
     })
         .sort((a, b) => (a.at < b.at ? 1 : -1));
     /* ---------- name gate ---------- */
@@ -1274,6 +1369,20 @@ function TicketBooth() {
                                 fontFamily: "inherit",
                             } })),
                     React.createElement("div", null,
+                        React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "rgba(28,28,30,0.42)", marginBottom: 8 } }, "メモ（任意・ログに残ります）"),
+                        React.createElement("textarea", { value: issueMemo, onChange: (e) => setIssueMemo(e.target.value), placeholder: "例：記念日の追加分", rows: 2, style: {
+                                width: "100%",
+                                boxSizing: "border-box",
+                                padding: "10px 12px",
+                                borderRadius: 8,
+                                border: "1.5px solid rgba(0,0,0,0.2)",
+                                background: "rgba(0,0,0,0.05)",
+                                color: "#1C1C1E",
+                                fontSize: 13.5,
+                                resize: "vertical",
+                                fontFamily: "inherit",
+                            } })),
+                    React.createElement("div", null,
                         React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "rgba(28,28,30,0.42)", marginBottom: 8 } }, "\u679A\u6570"),
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
                             React.createElement("button", { onClick: () => setQty((q) => Math.max(1, q - 1)), style: {
@@ -1390,6 +1499,20 @@ function TicketBooth() {
                                             cursor: "pointer",
                                         } }, "\uFF0B"))));
                         })),
+                        React.createElement("div", { style: { marginBottom: 10 } },
+                            React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "rgba(28,28,30,0.42)", marginBottom: 8 } }, "メモ（任意・ログに残ります）"),
+                            React.createElement("textarea", { value: packMemo, onChange: (e) => setPackMemo(e.target.value), placeholder: "ログ用のメモ（例：今月分）", rows: 2, style: {
+                                    width: "100%",
+                                    boxSizing: "border-box",
+                                    padding: "10px 12px",
+                                    borderRadius: 8,
+                                    border: "1.5px solid rgba(0,0,0,0.2)",
+                                    background: "rgba(0,0,0,0.05)",
+                                    color: "#1C1C1E",
+                                    fontSize: 13.5,
+                                    resize: "vertical",
+                                    fontFamily: "inherit",
+                                } })),
                         React.createElement("div", { style: { fontSize: 11, color: "rgba(28,28,30,0.42)", marginBottom: 10 } }, "\u5B9B\u5148\u306F\u4E0A\u306E\u300C\u5B9B\u5148\u300D\u6B04\u3067\u9078\u3093\u3060\u76F8\u624B\u306B\u306A\u308A\u307E\u3059"),
                         React.createElement("button", { onClick: issueStarterPack, style: {
                                 width: "100%",
@@ -1439,12 +1562,15 @@ function TicketBooth() {
                             group.items.length,
                             "\uFF09")),
                     React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, group.items.map((t) => (React.createElement(TicketStub, { key: t.id, ticket: t, onClick: () => setDetail(t) })))))))))),
-                tab === "history" && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, loading ? (React.createElement(Empty, { text: "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026" })) : historyItems.length === 0 ? (React.createElement(Empty, { text: "\u4F7F\u7528\u5C65\u6B74\u306F\u307E\u3060\u3042\u308A\u307E\u305B\u3093", sub: "\u4F7F\u7528\u3057\u305F\u30C1\u30B1\u30C3\u30C8\u304C\u3053\u3053\u306B\u8A18\u9332\u3055\u308C\u307E\u3059" })) : (historyItems.map((e) => {
+                tab === "history" && (React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, loading ? (React.createElement(Empty, { text: "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026" })) : historyItems.length === 0 ? (React.createElement(Empty, { text: "履歴はまだありません", sub: "発行・譲渡・使用したチケットがここに記録されます" })) : (historyItems.map((e) => {
                     const t = ticketById.get(e.ticketId);
                     const badge = {
                         invalidated: { label: "無効化", color: "#2563EB" },
                         restored: { label: "復活", color: "#D6336C" },
                         cancelled: { label: "キャンセル", color: "rgba(28,28,30,0.42)" },
+                        used: { label: "使用", color: "#1C1C1E" },
+                        issued: { label: e.count > 1 ? `発行 ${e.count}枚` : "発行", color: "#16A34A" },
+                        transferred: { label: "譲渡", color: "#7C3AED" },
                     }[e.action];
                     return (React.createElement("div", { key: e.id, onClick: () => t && setDetail(t), style: {
                             display: "flex",
@@ -1461,9 +1587,12 @@ function TicketBooth() {
                                 e.title,
                                 badge && (React.createElement("span", { style: { fontSize: 10, fontWeight: 700, color: badge.color, border: `1px solid ${badge.color}`, borderRadius: 4, padding: "0 4px" } }, badge.label))),
                             React.createElement("div", { style: { color: "rgba(28,28,30,0.42)", fontSize: 11 } },
-                                t ? `${t.from} → ${t.to}` : e.actor,
+                                e.from && e.to ? `${e.from} → ${e.to}` : t ? `${t.from} → ${t.to}` : e.actor,
                                 " \u30FB ",
-                                fmtDate(e.at))),
+                                e.usedOn ? `使用日 ${fmtYMD(e.usedOn)}` : fmtDate(e.at)),
+                            e.memo && (React.createElement("div", { style: { color: "rgba(28,28,30,0.6)", fontSize: 12, marginTop: 2, whiteSpace: "pre-wrap", wordBreak: "break-word" } },
+                                "📝 ",
+                                e.memo))),
                         React.createElement("span", { style: { fontSize: 14, color: "rgba(28,28,30,0.42)" } }, "\u203A")));
                 })))))),
         React.createElement(TicketModal, { ticket: detail, myName: myName, tickets: tickets, onClose: () => setDetail(null), onUse: markUsed, onInvalidate: invalidateTicket, onRestore: restoreTicket, onTransfer: transferTicket, onCancelUse: cancelUse }),

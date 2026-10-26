@@ -1,0 +1,29 @@
+{
+  "version": "1.1.0",
+  "source": "/home/user/claude-harness",
+  "settings": "361f8edcca559005ad984ef59c106cfa123d432d97d81acaf1822f51bb0090db",
+  "files": {
+    ".claude/agents/backend-builder.md": "b6b6ada7beb20d5519a002dd367737ec6dd67ebb6440ab50ed8e1339ef4651d3",
+    ".claude/agents/code-reviewer.md": "1ca10fa1f1d321f2480eef31440fcb9582777b91d7e0749ae6f095007710976a",
+    ".claude/agents/codebase-researcher.md": "5e49b449165354e1c46be4b9b388fdd5baaf3676576b93bf3b8bb403fd0cb4c6",
+    ".claude/agents/frontend-builder.md": "afd0d44b47d5ed0babffbf791358d3b5f668bce3c01a8cd0480457fbeb4f8977",
+    ".claude/agents/spec-writer.md": "91967c84461a9bb08f22d3df6b75a871a3570cec24def2b01ab8d116be8ead0e",
+    ".claude/agents/story-writer.md": "aa55cfebd26f7c6c32f4f6fde4d219f30298cbb9b8c7ceb155a0eec22305f775",
+    ".claude/agents/test-verifier.md": "58cb21f9f3c4829508be810f7120b9ee7e5607c87bb637905e1801b86d675d58",
+    ".claude/hooks/_common.py": "3fe7e541ae731d4761b4348bcb8b099d6d18341b0584a432269f998b08d0d4b7",
+    ".claude/hooks/guard_bash.py": "249c56c54875e80c47a51f122cd534b98232fcd200c8066e51a44817f3f55f70",
+    ".claude/hooks/guard_files.py": "a052f79bb233300439ad0eddc61df90593e296d9cd641ff35161f1b655cbc705",
+    ".claude/hooks/post_edit.py": "a6e21d8097243bd9f2d25891ba623768679548e7c99ded5d672a6ac88eadd9e3",
+    ".claude/hooks/session_start.py": "50815d688a917713bdf2d88415197826704281499cfa072a3cb8b5ab8bf53ff0",
+    ".claude/hooks/stop_gate.py": "f62587e271eb158e8b37ce14d60c10415f4c43fa88c9ebd1487bfb526caa4a53",
+    ".claude/rules/harness.md": "56fc902cc35a54966d4b27720d5059f5bee9122ce8a40a8125b6dacb9fb9f61d",
+    ".claude/rules/language.md": "f4be0622053d3eadd58ff29ffed63da265618f42ebf88c55c914b7dc13ad95c9",
+    ".claude/scripts/daily_plan.py": "c43f9c8dc92b69d23b41d7a70c79b05dc90e7e0c57571c484834921d51848379",
+    ".claude/skills/daily-setup/SKILL.md": "d3ef2efb3eb3aa56f228cb665fcbe35f60505089c5bd3e2abd90f75c1ca10c43",
+    ".claude/skills/feature/SKILL.md": "23bd420765efd42eb223af3c639b2af36d2843bd6c3fe9e0adb607febd801cba",
+    ".github/PULL_REQUEST_TEMPLATE.md": "541fa8768e17af9ae3b904f1d5cb755a6f7acf8a4217c2ddcde5909ea14d6e68",
+    "docs/plans/_template/ai_todo.md": "3ef8f151f3b7a53818a58d2c486d645247a142d467c9548d8c836f332b00ccab",
+    "docs/plans/_template/co_plan.md": "a62db2478e1712bbb611ef535cf55cc56e71d4f2adaffa43c26debd0f82c1f30"
+  },
+  "synced_at": "2026-10-26T07:04:20"
+}
